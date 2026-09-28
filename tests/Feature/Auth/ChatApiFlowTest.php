@@ -46,8 +46,8 @@ test('duplicate_registration_returns_conflict_response', function () {
     ]);
 
     $response
-        ->assertStatus(409)
-        ->assertJsonPath('message', 'You are registered already, please login');
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'The phone has already been taken.');
 });
 
 test('authenticated_user_can_list_their_conversations', function () {

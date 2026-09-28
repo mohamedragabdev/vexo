@@ -39,11 +39,11 @@ protected $keyType = 'string';
     // Relations
     //==============
 
-    public function senderConversations(){
+    public function sender(){
         return $this->hasMany(Conversation::class,'sender_id');
     }
 
-    public function receiverConversations(){
+    public function receiver(){
         return $this->hasMany(Conversation::class,'receiver_id');
     }
     

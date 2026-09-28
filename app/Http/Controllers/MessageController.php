@@ -59,12 +59,17 @@ class MessageController extends Controller
     public function update(UpdateMessage $request, int $id)
     {
         $user = Auth::user();
-        $this->authorize('update', $user);
-        $message = Message::findOrFail($id);
+
+        $message = Message::where('sender_id', $user->id)
+            ->findOrFail($id);
+
+        $this->authorize('update', $message);
+
         $message->update($request->only('message'));
+
         return response()->json([
-            'message' => 'successful updated',
-            'content' => $message
+            'message' => 'Successfully updated',
+            'content' => $message,
         ]);
     }
 
@@ -74,11 +79,11 @@ class MessageController extends Controller
     public function destroy(int $id)
     {
         $user = Auth::user();
-        $this->authorize('delete', $user);
-        $message = Message::findOrFail($id);
+        $message = Message::where('sender_id',$user->id)->findOrFail($id);
+        $this->authorize('delete', $$message);
         $message->delete();
         return response()->json([
             'message' => 'successful deleted',
-        ],200);
+        ], 200);
     }
 }

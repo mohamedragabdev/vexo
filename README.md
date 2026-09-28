@@ -1,293 +1,334 @@
 # Vexo
 
-Vexo is a Laravel-based messaging API with user registration, login, conversation listing, and message sending. The current implementation exposes a versioned REST API under `/api/v1` and uses Sanctum personal access tokens for authenticated requests. The project also includes a Reverb chat channel configuration for real-time private messaging, though the live broadcast flow is only partially wired into the application.
+## Overview
 
-# Current Status
+Vexo is an in-development Laravel backend for phone-number-based messaging. It provides registration and login, Sanctum bearer-token authentication, conversation and message operations, and an initial private-channel broadcasting path. The repository also contains a minimal Blade chat view and Cashier/Stripe schema and configuration, but does not implement a billing workflow.
 
-This repository reflects the current implementation as it exists today. It is a working prototype that is intended to be extended in the future, rather than a complete production-ready chat platform.
+## Project Status
 
-# Technology Stack
+Vexo is a prototype and is **not production-ready**. Core account and chat endpoints exist, but message creation is not validated, delete-message currently has a runtime defect, generated conversation routes target missing controller methods, and the real-time client depends on a hard-coded user ID. Review the limitations below before exposing the API to users.
 
-- PHP: ^8.3
-- Laravel: ^13.17
-- Application database driver: MySQL (`DB_CONNECTION=mysql` in `.env`, database `vexo`)
-- Test database driver: MySQL (`DB_CONNECTION=mysql` in `.env.testing` and `phpunit.xml`, database `vexo-test`)
-- Authentication: Laravel Sanctum with personal access tokens
-- Real-time layer: Laravel Reverb with private channel broadcasting
-- Billing package: Laravel Cashier with Stripe support configured in the project but not used by the API routes in the current codebase
-- Testing: Pest + PHPUnit
-- Frontend: Vite asset pipeline with a simple chat view route under `/api/v1/chat`
+### Implemented
 
-# Architecture
+- Phone-based registration and login with Egyptian mobile-number normalization.
+- Sanctum personal access tokens and authenticated API routes.
+- Conversation listing, participant-scoped retrieval/deletion, message status updates when opening a conversation, and message creation/update logic.
+- A private broadcast event for newly sent messages, with channel authorization.
+- Login, OTP, and send-message rate limits.
 
-The application follows a standard Laravel API layout. Route definitions live in `routes/api.php`, while the web-facing entry point is minimal and serves the default Laravel welcome page from `routes/web.php`.
+### Partial or not implemented
 
-The main application flow is:
+- OTP generation is not persisted, delivered, or verified.
+- Conversation resource routes include `store` and `update` actions that have no corresponding controller methods.
+- Message deletion reaches an invalid variable reference and does not complete successfully.
+- Cashier tables and configuration are present, but no application billing flow is implemented.
+- The broadcast channel and client are wired, but the chat view uses a fixed user ID and the application default broadcaster is not set to Reverb by `.env.example`.
 
-1. A user registers through `RegisterController`.
-2. A user logs in through `AuthenticatedController` using a phone number and password.
-3. Authenticated requests are protected by the `auth:sanctum` middleware.
-4. Conversation and message requests are handled by `ConversationController` and `MessageController`.
-5. Messages trigger `MessageSent`, which broadcasts to a private channel named `chat.{receiver_id}`.
+## Features
 
-# Project Structure
+- Public registration and login using phone numbers and passwords.
+- Authentication via Sanctum personal access tokens.
+- Conversation listing and participant-restricted conversation access.
+- Message sending, sender-only message update logic, and `send`/`received`/`seen` status values.
+- A private `chat.{receiver_id}` channel and `message.sent` broadcast event.
+- A minimal authenticated `/api/v1/chat` Blade view.
 
-- `app/Http/Controllers`: API controllers for authentication, conversations, and messages
-- `app/Http/Requests`: form request validation for login, registration, and message updates
-- `app/Http/Resources`: API serialization layer, specifically `ConversationResource`
-- `app/Models`: Eloquent models for `User`, `Conversation`, and `Message`
-- `app/Policies`: `UserPolicy` for simple user-only authorization checks
-- `app/Events`: broadcast event for sent messages
-- `app/Listeners`: placeholder listener for message events
-- `app/Service`: `PhoneNormalizeService` for phone number normalization
-- `database/migrations`: schema definition for users, conversations, messages, Sanctum tokens, and billing-related tables
-- `routes`: API, web, and channel definitions
-- `tests`: existing and newly added Pest tests
+## Technology Stack
 
-# Database
+- PHP `^8.3` (the project has been run with PHP 8.5).
+- Laravel `^13.17` (installed version verified as 13.32.0).
+- Laravel Sanctum `^4.0` for personal access tokens.
+- Laravel Reverb `^1.11` and Laravel Echo/Pusher JS packages for the configured broadcast path.
+- Laravel Cashier `^16.8` for Stripe-related schema/configuration only.
+- Pest `^5.2` with PHPUnit.
+- Vite 8.
+- Database configuration is environment-driven. `.env.example` selects MySQL; the PHPUnit test configuration uses MySQL database `vexo-test`.
 
-The database schema currently includes the following application tables and supporting tables:
+## Architecture Overview
 
-## users
+The application follows Laravel's standard HTTP structure:
 
-- Purpose: stores the application users.
-- Important columns: `id` (UUID string primary key), `name`, `phone`, `password`, `remember_token`, timestamps.
-- Primary key: `id`
-- Unique constraints: `phone` is unique.
-- Indexes: `phone` is indexed via `idx_phone`.
-- Relationships: each user may be a sender or receiver in multiple conversations and messages.
+- `routes/api.php` defines `/api/v1` endpoints and groups protected operations behind `auth:sanctum`.
+- Authentication controllers use Form Requests and `PhoneNormalizeService`.
+- `ConversationController` and `MessageController` implement chat operations using Eloquent models.
+- `ConversationResource` shapes conversation responses.
+- Policies express participant/owner checks for conversations and messages.
+- `MessageSent` broadcasts synchronously to a private receiver channel. `SendMessage` exists as an empty listener and is not the broadcast implementation.
+- `routes/web.php` serves Laravel's welcome page at `/`; the application also registers Laravel's `/up` health route.
 
-## conversations
+## Database Design
 
-- Purpose: tracks a conversation between two users.
-- Important columns: `id`, `sender_id`, `receiver_id`, timestamps.
-- Primary key: `id`
-- Foreign keys: `sender_id` and `receiver_id` both reference `users` with cascade-on-delete.
-- Relationships: `belongsTo(User, 'sender_id')`, `belongsTo(User, 'receiver_id')`, `hasMany(Message)`.
+The migrations define these principal tables:
 
-## messages
+| Table | Purpose and relevant fields |
+| --- | --- |
+| `users` | String primary key (UUID values are created at registration), nullable `name`, unique `phone`, password, remember token, timestamps. |
+| `conversations` | Auto-incrementing ID, `sender_id` and `receiver_id` foreign keys to users, timestamps. Deleting either user cascades to the conversation. |
+| `messages` | Auto-incrementing ID, sender/receiver user foreign keys, conversation foreign key, text body, status enum (`send`, `received`, `seen`, default `send`), timestamps. Parent deletion cascades. |
+| `personal_access_tokens` | Sanctum token records with UUID morph columns, token hash, abilities, last-used and optional expiry metadata. |
+| `subscriptions`, `subscription_items` | Cashier/Stripe subscription metadata. No application subscription workflow is connected. |
+| `jobs`, `job_batches`, `failed_jobs`, `cache`, `sessions`, `password_reset_tokens` | Laravel infrastructure tables. |
 
-- Purpose: stores individual chat messages within a conversation.
-- Important columns: `id`, `sender_id`, `receiver_id`, `conversation_id`, `message`, `status`, timestamps.
-- Primary key: `id`
-- Foreign keys: `sender_id`, `receiver_id`, `conversation_id` all reference their parent records and cascade on delete.
-- Constraints: `status` is an enum with values `send`, `received`, and `seen` and defaults to `send`.
-- Relationships: `belongsTo(User, 'sender_id')`, `belongsTo(User, 'receiver_id')`, `belongsTo(Conversation)`.
+`User` has many conversations through `sender()` and `receiver()`, and messages through `senderMessages()` and `receiverMessages()`. `Conversation` belongs to a sender and receiver and has many messages. `Message` belongs to its sender, receiver, and conversation. There is no separate participant table or uniqueness constraint preventing duplicate conversations between the same users.
 
-## personal_access_tokens
+## Authentication
 
-- Purpose: stores Sanctum personal access tokens.
-- Important columns: `id`, `tokenable_type`, `tokenable_id`, `name`, `token`, `abilities`, `last_used_at`, `expires_at`, timestamps.
-- Primary key: `id`
+Registration and login are public. Login validates the normalized phone against the users table and checks the password through Laravel authentication. A successful login deletes the user's existing personal access tokens before creating a token named `auth_personal`; logging in therefore invalidates tokens from other sessions/devices. Protected API routes require `Authorization: Bearer <token>` through `auth:sanctum`. Logout deletes the current access token.
 
-## subscriptions and subscription_items
+Phone normalization removes non-digits, prefixes local numbers beginning with `0` with `+2`, and prefixes numbers beginning with `20` with `+`. Registration and login then validate the `+20` mobile-number pattern for prefixes `10`, `11`, `12`, or `15`.
 
-- Purpose: billing tables added by Cashier/Stripe integration.
-- Important columns: include `user_id`, `stripe_id`, `stripe_status`, `stripe_price`, and related pricing metadata.
-- Relationships: not currently used by the API routes in this codebase.
+## Authorization and User Ownership
 
-# Models & Relationships
+- Conversation listing queries conversations where the authenticated user is either sender or receiver.
+- Conversation retrieval and deletion are scoped to either conversation participant; the policy methods also allow either participant.
+- Opening a conversation changes messages addressed to the current user to `seen`.
+- Message update queries only messages sent by the current user and the policy checks `sender_id` again.
+- Message deletion also scopes its initial lookup to the sender, but the controller currently passes an invalid variable reference to `authorize()` and fails before deletion.
+- Message creation does not verify that a supplied `conversation_id` belongs to the authenticated user or matches the supplied receiver. This can permit writing into another conversation if its ID is known, and is a BOLA/data-integrity risk.
+- The `UserPolicy` is defined but is not used by the current API controllers.
 
-## User
+## API Documentation
 
-- `hasMany(Conversation, 'sender_id')` via `senderConversations()`
-- `hasMany(Conversation, 'receiver_id')` via `receiverConversations()`
-- `hasMany(Message, 'sender_id')` via `senderMessages()`
-- `hasMany(Message, 'receiver_id')` via `receiverMessages()`
-- Uses `HasApiTokens` and `Authenticatable` from Laravel Sanctum.
+All application API routes are under `/api/v1`, except Laravel's broadcast authorization endpoint at `/api/broadcasting/auth`. Responses are JSON for API requests, except `/api/v1/chat`, which returns an HTML view. Validation errors use Laravel's standard response format rather than a project-specific error envelope.
 
-## Conversation
+### Web and Health Routes
 
-- `belongsTo(User, 'sender_id')`
-- `belongsTo(User, 'receiver_id')`
-- `hasMany(Message)`
+- `GET /` renders Laravel's default welcome view.
+- `GET /up` is Laravel's configured health endpoint.
 
-## Message
+### API Endpoints
 
-- `belongsTo(User, 'sender_id')`
-- `belongsTo(User, 'receiver_id')`
-- `belongsTo(Conversation)`
+| Method | URL | Authentication | Behavior |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/register` | None | Validate and create an account; returns an OTP value but does not verify it. |
+| `POST` | `/api/v1/login` | None; 5 requests/minute | Authenticate by phone/password and return a bearer token. |
+| `POST` | `/api/v1/send-otp` | None; custom OTP limiter | Return a generated six-digit number directly; it is not stored or sent. |
+| `POST` | `/api/v1/logout` | Sanctum | Delete the current token. |
+| `GET` | `/api/v1/conversation` | Sanctum | List conversations involving the authenticated user. |
+| `GET` | `/api/v1/conversation/{conversation}` | Sanctum | Return a participant's conversation and mark messages addressed to them as seen. |
+| `DELETE` | `/api/v1/conversation/{conversation}` | Sanctum | Delete a participant's conversation and its cascading messages. |
+| `POST` | `/api/v1/send-message` | Sanctum; 100 requests/minute | Create a message in the supplied conversation or create a new conversation. |
+| `PUT` | `/api/v1/update-message/{id}` | Sanctum; 100 requests/minute | Update a message authored by the current user. |
+| `DELETE` | `/api/v1/delete-message/{id}` | Sanctum; 100 requests/minute | Intended to delete a message authored by the current user; currently fails due to a controller defect. |
+| `GET` | `/api/v1/chat` | Sanctum | Render the minimal chat Blade view. |
+| `GET\|POST\|HEAD` | `/api/broadcasting/auth` | Sanctum | Laravel's broadcast authorization endpoint for private channels. Echo uses `POST`. |
 
-# Authentication
+`Route::apiResource('/conversation', ...)` also registers `POST /api/v1/conversation` and `PUT|PATCH /api/v1/conversation/{conversation}`. The controller does not define `store()` or `update()`, so these routes are registered but unsupported and should not be treated as functioning endpoints.
 
-Authentication is implemented with Laravel Sanctum.
+### Endpoint Details and Examples
 
-- Registration is public: `POST /api/v1/register`.
-- Login is public: `POST /api/v1/login`.
-- Validation normalizes the incoming phone number using `PhoneNormalizeService` before checking it against `users.phone`.
-- A successful login deletes any existing personal tokens for the user and creates a new token named `auth_personal`.
-- The response includes `access_token`, `token_type`, and the authenticated user record.
-- Protected endpoints are under the `auth:sanctum` middleware group in `routes/api.php`.
-- `logout` uses the current access token and deletes it.
+#### `POST /api/v1/register`
 
-# Authorization
+Request body:
 
-The project contains a `UserPolicy` with basic same-user checks:
+```json
+{
+  "name": "Ahmed",
+  "phone": "01012345678",
+  "password": "password123"
+}
+```
 
-- `view(User $user, User $model)` allows access only when `$user->id === $model->id`
-- `update(User $user, User $model)` allows access only when `$user->id === $model->id`
-- `delete(User $user, User $model)` allows access only when `$user->id === $model->id`
+`name` is optional, a string up to 50 characters. `phone` is required, normalized, unique, and must match the configured Egyptian mobile pattern. `password` is required and 8-20 characters. On success the endpoint returns `201` with `message`, `user`, and a generated integer `otp`. Duplicate normalized phone values fail the Form Request's `unique` validation with `422` before the controller's `409` branch can run; the active feature test verifies this validation response.
 
-The current API behavior is mixed:
+#### `POST /api/v1/login`
 
-- `ConversationController::index()` authorizes the authenticated user and then queries sender-owned conversations only.
-- `ConversationController::show()` authorizes the authenticated user and then looks up the conversation within `$user->senderConversations()` before marking messages as seen.
-- `ConversationController::destroy()` authorizes the authenticated user, but then deletes a conversation by ID without confirming that the conversation belongs to the current user.
-- `MessageController::update()` and `MessageController::destroy()` call `authorize('update', $user)` and `authorize('delete', $user)` respectively, but then fetch the message by ID directly rather than enforcing ownership against the message record itself.
+Request body:
 
-In other words, the policy exists, but the app does not consistently enforce resource ownership for conversations or messages before mutating them by ID.
+```json
+{
+  "phone": "01012345678",
+  "password": "password123"
+}
+```
 
-# API
+On success, `200` returns `access_token`, `token_type` (`Bearer`), and `user`. Invalid request fields return `422`. A valid registered phone with a wrong password returns a JSON `message`, but the controller does not set an error status and therefore responds with `200`. The route is limited to 5 requests per minute.
 
-## POST /api/v1/register
+#### `POST /api/v1/send-otp`
 
-- Authentication: none
-- Purpose: create a user account if the phone number is not already registered
-- Validation: `name` optional string, `phone` required unique phone matching `+20...` format, `password` required 8-20 chars
-- Response: `201 Created` with a success message, the created user, and a generated OTP integer
-- Intended controller behavior: the controller checks for an existing phone and returns `409 Conflict` with a “You are registered already, please login” message.
-- Actual observed validation behavior: in the current project, the `unique:users,phone` validation rule fires first, so a duplicate registration currently returns `422 Unprocessable Entity` before the manual conflict branch is reached.
+No body fields are validated. The response is the generated six-digit number itself, not an envelope. The code neither persists nor verifies nor delivers the value. The custom limiter permits up to 3 requests per minute per supplied phone key and 5 per minute per IP; exceeding a limit returns `429`.
 
-## POST /api/v1/login
+#### `POST /api/v1/logout`
 
-- Authentication: none
-- Purpose: log in an existing user using a normalized phone number and password
-- Validation: phone required, string, existing user, regex for Egyptian mobile format; password required
-- Response: `200 OK` with `access_token`, `token_type`, and user data
-- Errors: returns a JSON message when the phone or password is invalid
+Requires a Sanctum bearer token. Success is `200`:
 
-## POST /api/v1/send-otp
+```json
+{
+  "message": "success logout"
+}
+```
 
-- Authentication: none
-- Purpose: generates a random six-digit number and returns it directly
-- Validation: none
-- Notes: the returned OTP is not stored or verified against any user action in the current codebase
+An unauthenticated request is rejected with `401`.
 
-## POST /api/v1/logout
+#### `GET /api/v1/conversation`
 
-- Authentication: `auth:sanctum`
-- Purpose: revoke the current personal access token
-- Response: JSON success message
+Requires Sanctum authentication. Success returns a Laravel resource collection under the `data` key. Each item includes `conversation`, `sender_id`, `receiver_id`, `conversation_name`, `receiver_number`, and `messages`. Conversations are ordered newest first. The resource always uses the conversation's `receiver` for the displayed name and phone, including when the authenticated user is the receiver.
 
-## GET /api/v1/conversation
+#### `GET /api/v1/conversation/{conversation}`
 
-- Authentication: `auth:sanctum`
-- Purpose: list conversations belonging to the authenticated user
-- Behavior: loads conversations where the user is the sender, eager loads the receiver relationship, and serializes them with `ConversationResource`
-- Response: array of conversation objects
+Requires Sanctum authentication and participation in the conversation. Success returns one conversation resource under the `data` key with the fields above. Messages in that conversation whose `receiver_id` is the authenticated user and whose status is not already `seen` are updated to `seen`. Nonexistent or non-participant conversations return `404` due to the participant-scoped lookup.
 
-## GET /api/v1/conversation/{id}
+#### `DELETE /api/v1/conversation/{conversation}`
 
-- Authentication: `auth:sanctum`
-- Purpose: view one conversation for the authenticated user
-- Behavior: finds the conversation only among the authenticated user’s sender conversations, marks all messages in that conversation as `seen`, and returns the serialized conversation
-- Response: conversation resource with a nested `messages` collection
+Requires Sanctum authentication and participation. Success returns `200` with `{"message":"success deleted"}`. A conversation and its messages are removed via database cascade. A non-participant or nonexistent ID returns `404`.
 
-## DELETE /api/v1/conversation/{id}
+#### `POST /api/v1/send-message`
 
-- Authentication: `auth:sanctum`
-- Purpose: delete a conversation by ID
-- Behavior: calls `Conversation::findOrFail($conversation)->delete()` without checking whether the user owns it
+Requires Sanctum authentication; limited to 100 requests per minute. The controller reads `conversation_id`, `receiver_phone`, and `message` directly from the request. These inputs have no Form Request or explicit validation. The response on the successful path is `200` with `message` (`message sent successfully`) and `model` (the created message). A `MessageSent` event is dispatched.
 
-## POST /api/v1/send-message
+Example request for a new conversation (the receiver phone must already exist exactly as stored):
 
-- Authentication: `auth:sanctum`
-- Purpose: send a message to a recipient phone number
-- Request body: `conversation_id` optional, `receiver_phone` required, `message` required
-- Behavior: the controller reads the request values directly, resolves the target user with `User::where('phone', $request->receiver_phone)->first()`, and then either reuses the matching conversation or creates a new one. There is no dedicated Form Request for this endpoint in the current codebase.
-- Validation note: the endpoint does not use a separate request class to validate `receiver_phone` before the controller runs; the controller simply performs a lookup on that value. The field is expected by the controller but not independently enforced by a dedicated validation layer in this route.
-- Response: JSON success message and the created message model
-- Real-time behavior: dispatches `MessageSent` event to `chat.{receiver_id}`
+```json
+{
+  "receiver_phone": "+201003334444",
+  "message": "Hello"
+}
+```
 
-## PUT /api/v1/update-message/{id}
+The successful response has this shape; IDs and timestamps depend on the inserted records:
 
-- Authentication: `auth:sanctum`
-- Purpose: update the text for a message
-- Validation: `message` required string between 1 and 500 characters
-- Behavior: loads the message by ID and updates it without checking message ownership
+```json
+{
+  "message": "message sent successfully",
+  "model": {
+    "sender_id": "<authenticated-user-id>",
+    "receiver_id": "<receiver-user-id>",
+    "conversation_id": 1,
+    "message": "Hello",
+    "id": 1,
+    "created_at": "<timestamp>",
+    "updated_at": "<timestamp>"
+  }
+}
+```
 
-## DELETE /api/v1/delete-message/{id}
+The controller looks up the receiver by exact phone value. If a conversation ID resolves, it uses that conversation without checking the sender/receiver participants. If it does not resolve, it creates a conversation with the authenticated user and resolved receiver. Missing/unknown receiver data can therefore cause an exception rather than a controlled validation response. Ensure any test request uses a real registered receiver and valid message fields; no stable error contract is defined for invalid input.
 
-- Authentication: `auth:sanctum`
-- Purpose: delete a message by ID
-- Behavior: loads the message by ID and deletes it without checking ownership
+#### `PUT /api/v1/update-message/{id}`
 
-# Chat System
+Requires Sanctum authentication and a message sent by the current user. Request body:
 
-The chat system is centered on a simple conversation model between two users.
+```json
+{
+  "message": "Updated message text"
+}
+```
 
-- A conversation contains `sender_id` and `receiver_id`.
-- Message creation is done with a sender and receiver relationship on each message.
-- A message stores `status` as `send`, `received`, or `seen`.
-- When a conversation is opened, the controller updates all messages in that conversation to `seen`.
-- Private broadcasting is partially implemented: `routes/channels.php` defines the channel authorization for `chat.{receiver_id}`, and the `MessageSent` event implements `ShouldBroadcastNow` for that private channel.
-- The event listener `SendMessage` is present but remains a stub and does not handle the event in the current code.
-- The project includes private-channel authorization logic for broadcasting, but it does not include a complete end-to-end realtime client or a fully implemented listener pipeline.
-- There is no participant table, no read-by-user tracking, no pagination, and no message edit or delete history model.
+The message must be a string of 1-500 characters. Success returns `200` with `message` (`Successfully updated`) and `content` containing the updated message. Invalid body data is rejected with `422`; a missing or non-owned message is not found through the sender-scoped query (`404`).
 
-# Testing
+#### `DELETE /api/v1/delete-message/{id}`
 
-The complete test suite was run with `php artisan test --compact`. The verified result was:
+Requires Sanctum authentication and initially looks up only a message sent by the current user. The controller then calls authorization with `$$message` instead of `$message`, which is an invalid reference; deletion does not reach the delete call. No successful response should be relied upon until this is corrected. A missing or non-owned message is returned as `404` by the scoped lookup.
 
-- Tests: 5
-- Passed: 4
-- Failed: 1
-- Skipped: 0
-- Assertions: 13
-- Duration: 2614 ms
+#### `GET /api/v1/chat`
 
-The passing tests cover:
+Requires Sanctum authentication and returns an HTML Blade view rather than a JSON API response. The view contains a fixed chat user ID and renders an incoming event's message text; it is a development stub, not a multi-user chat interface.
 
-- Login with a normalized phone number
-- Authenticated conversation listing
-- Rejection of logout by an unauthenticated user
-- The unit example test, `that true is true`
+#### `GET|POST|HEAD /api/broadcasting/auth`
 
-The duplicate-registration test, `P\Tests\Feature\Auth\ChatApiFlowTest::__pest_evaluable_duplicate__registration__returns__conflict__response`, creates a user with phone `+201012345678` and attempts registration with the same number in local form, `01012345678`. It intentionally exercises duplicate phone-number registration. The test expects HTTP `409 Conflict` and the message `You are registered already, please login`.
+Laravel's broadcast authorization route is registered with `api` and `auth:sanctum` middleware. It authorizes `chat.{receiver_id}` only when the authenticated user's ID equals the channel receiver ID. The route follows Laravel's broadcasting protocol; it is not a custom API response contract.
 
-The current application instead returns HTTP `422 Unprocessable Entity`: the `unique:users,phone` validation rejects the duplicate before the controller's duplicate-user conflict branch can run. The test setup is valid; `RefreshDatabase` is not the cause. This expected-versus-actual difference is a known behavior discrepancy and has not been fixed. The duplicate-registration test remains failing and has not been changed or disabled.
+## Error Handling
 
-The project does not currently provide broad coverage for conversation authorization, message ownership, validation edge cases, or broadcasting behavior.
+- Unauthenticated protected-route requests: `401`.
+- Form Request validation errors: Laravel `422` response.
+- Scoped model lookup misses: `404`.
+- Policy denials: Laravel authorization response, normally `403` when a lookup has already succeeded.
+- Configured rate-limit responses: `429`.
+- Wrong password after valid login validation currently returns a message with `200`, not an authentication error status.
+- Unvalidated message creation and the message deletion defect can raise server exceptions. Error responses are not normalized into a custom application format.
 
-# Known Issues / Observations
+## Installation and Setup
 
-1. The route prefix is `/api/v1`, but the existing test suite still references `/api/register`; this indicates a mismatch between the current API version and the older test expectation.
-2. `ConversationController` and `MessageController` call the policy methods with the authenticated user, but the code does not consistently enforce ownership before deleting or updating records by ID.
-3. The `UserPolicy` is not enforced on conversations or messages at the model level; it is effectively a same-user identity check.
-4. `sendOTP` returns a random integer but does not persist it, verify it, or associate it with a user action.
-5. The controller intends to return `409 Conflict` for a duplicate phone number, but the current observed behavior is `422 Unprocessable Entity` because the request validation triggers `unique:users,phone` before the manual duplicate check is reached.
-6. `MessageController::store()` resolves the receiver by phone in the controller and creates or reuses a conversation without a dedicated request validator for this endpoint.
-7. The `UserFactory` defines an `email` property even though the `users` table does not include an `email` column; this may be a stale or incomplete factory definition and should be treated as a potential observation rather than a confirmed production bug.
-8. `apiResource('/conversation', ConversationController::class)` generates a `store` route even though the controller does not implement `store()`, resulting in a missing method if that route is hit.
-9. The billing-related migrations and Cashier configuration are present, but there is no active subscription or Stripe checkout flow wired into the current controller layer.
-10. The `SendMessage` listener exists but does not handle the event, so the listener remains a stub rather than a fully implemented broadcast consumer.
+Prerequisites: PHP `^8.3`, Composer, a database supported by Laravel's configured drivers, and Node.js/npm if building the chat view assets.
 
+```sh
+composer install
+cp .env.example .env
+php artisan key:generate
+```
 
+Set the database connection and credentials in `.env`, then run migrations:
 
+```sh
+php artisan migrate
+```
 
-# Future Extension Ideas
+`.env.example` selects MySQL, while its host, port, database, username, and password entries are commented out. Configure valid MySQL connection details in `.env` before migrating. The committed `DatabaseSeeder` should not be assumed to work: its user factory omits the required `phone` column and provides `email`, which is not a users-table column or fillable model attribute.
 
-The following ideas fit the current architecture without inventing features the app does not already contain:
+For frontend assets:
 
-- Real-time messaging UI improvements with a front-end client using the private Reverb channels
-- Conversation pagination and message pagination
-- Message read status tracking beyond the current `seen` flag
-- Conversation search or filtering by participant
-- Message history control such as deletion or editing with ownership enforcement
-- Better policy checks for conversation and message ownership
-- OTP verification flow tied to a persisted or validated code
-- Subscription or Stripe billing integration if the Cashier setup is expanded into the app
+```sh
+npm install
+npm run build
+```
 
-These are future ideas only and are not part of the current implementation.
+## Environment Configuration
 
+Configure at least `APP_KEY`, `APP_URL`, `DB_CONNECTION`, and the database-specific settings (`DB_DATABASE`, plus host/port/username/password for network databases). Do not commit secrets.
 
+The scaffold `.env.example` sets `BROADCAST_CONNECTION=log`. For Reverb, configure `BROADCAST_CONNECTION=reverb`, the `REVERB_APP_ID`, `REVERB_APP_KEY`, `REVERB_APP_SECRET`, `REVERB_HOST`, `REVERB_PORT`, and `REVERB_SCHEME` values, and the corresponding `VITE_REVERB_*` client values used in `resources/js/echo.js`. The client reads a bearer token from browser `localStorage` under `access_token`.
 
-# Current Status
+## Database Migration and Seeding
 
-**🚧 Under Development**
+Apply schema changes with:
 
-Vexo is currently under active development. The existing implementation represents a working prototype of the messaging API, but several parts of the system are still being developed and refined.
+```sh
+php artisan migrate
+```
 
-The project is **not production-ready** yet. Authentication, conversations, messaging, authorization, testing, and real-time communication are currently being expanded and improved.
+The repository includes `DatabaseSeeder` and `UserFactory`, but their current attributes do not satisfy the non-null `users.phone` requirement. Seeding has not been run as part of this documentation update; repair the seed data before relying on `php artisan db:seed`.
 
-Existing known issues and incomplete features are documented in this file and are intentionally preserved until they are addressed during development.
+## Running the Application
+
+```sh
+php artisan serve
+```
+
+The API base path is `/api/v1`. When using the browser chat stub, build the Vite assets first. To run a Reverb server, configure the environment as described above and run:
+
+```sh
+php artisan reverb:start
+```
+
+The broadcast client and Blade view are prototype code with a hard-coded user ID; this does not constitute a complete chat client setup.
+
+## Running Tests
+
+Run the suite with:
+
+```sh
+php artisan test
+```
+
+Verified in this repository on 2026-09-28: **5 tests passed, 0 failed, 0 skipped, 14 assertions**. Active tests cover normalized-phone login, duplicate registration returning `422` validation, authenticated conversation listing, rejecting unauthenticated logout, and a trivial unit example. The duplicate-registration test no longer expects the controller's `409` branch because Form Request uniqueness validation runs first. Test configuration in `phpunit.xml` sets MySQL database `vexo-test`; the database must be available to run the suite in another environment.
+
+Coverage does not currently exercise message creation/deletion, resource authorization boundaries, invalid inputs, OTP behavior, or broadcast delivery.
+
+## Known Limitations
+
+- The API is a prototype and has not received a production security or operational readiness review.
+- Registration validates uniqueness before the controller's duplicate-account `409` branch, so duplicates produce `422`.
+- Wrong-password login responses use HTTP `200`.
+- The OTP is exposed in the response and has no persistence, delivery, expiry, or verification flow.
+- `send-message` has no explicit input validation and does not ensure a supplied conversation belongs to the caller or receiver.
+- Message delete fails due to the invalid `$$message` reference.
+- `apiResource` exposes conversation store/update routes whose controller actions do not exist.
+- Conversation resources access messages without eager loading them in the index path, causing an additional query per conversation; the list is also unpaginated.
+- The conversation resource labels the receiver as the conversation name even for the receiver's own view.
+- The chat page uses a fixed user ID; event reception and deployment configuration are not a production-ready client workflow.
+- The seeder/factory do not provide the required phone field.
+- No account recovery, OTP verification, conversation/message pagination, or message-history/audit model is implemented.
+- Cashier/Stripe database and configuration support exists without subscription or checkout application flows.
+
+## Future Improvements
+
+Potential next steps, not currently implemented, include correcting route/controller mismatches, adding validated and participant-safe message creation, fixing message deletion, using consistent status codes for authentication failures, persisting and verifying OTPs, adding pagination and broadcast integration tests, replacing the hard-coded chat identity, and implementing account recovery or billing flows only if required.
+
+## Contributing
+
+Contributions should include focused tests for changed behavior, preserve existing Laravel conventions, and document API contract changes. Do not treat the currently passing suite as comprehensive authorization or production-readiness coverage.
+
+## License
+
+The project declares the MIT License in `composer.json`; see [`LICENSE`](LICENSE).

@@ -16,10 +16,11 @@ class ConversationController extends Controller
     public function index()
     {
         $user = Auth::user();
+        $conversations = Conversation::where(function ($query) use ($user) {
+            $query->where('sender_id', $user->id)->orWhere('receiver_id', $user->id);
+        })->with(['sender', 'receiver'])->latest()->get();
 
-        $this->authorize('view', $user);
 
-        $conversations = $user->senderConversations()->with('receiver')->get();
 
         return ConversationResource::collection($conversations);
     }
@@ -31,12 +32,18 @@ class ConversationController extends Controller
      */
     public function show(int $conversation)
     {
-        $user =Auth::user();
-        $this->authorize('view',$user);
-        $conversation = $user->senderConversations()->with('receiver')->where('id',$conversation)->firstOrFail();
-        $conversation->messages()->update(['status'=>'seen']);
-        return new ConversationResource($conversation);
+        $user = Auth::user();
+        $conversation = Conversation::where(function ($query) use ($user) {
+            $query->where('sender_id', $user->id)->orWhere('receiver_id', $user->id);
+        })->findOrFail($conversation);
+        $this->authorize('view', $conversation);
 
+
+        $conversation->messages()
+            ->where('receiver_id', $user->id)
+            ->where('status', '!=', 'seen')
+            ->update(['status' => 'seen']);
+        return new ConversationResource($conversation);
     }
 
 
@@ -46,13 +53,14 @@ class ConversationController extends Controller
     public function destroy(int $conversation)
     {
         $user = Auth::user();
-        $this->authorize('delete',$user);
-        Conversation::findOrFail($conversation)->delete();
+        $conversation = Conversation::where(function ($query) use ($user) {
+            $query->where('sender_id', $user->id)->orWhere('receiver_id', $user->id);
+        })->findOrFail($conversation);
+        $this->authorize('delete', $conversation);
+        $conversation->delete();
         return response()->json([
-            'message'=>'success deleted',
+            'message' => 'success deleted',
 
-        ],200);
-        
-        
+        ], 200);
     }
 }
